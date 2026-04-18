@@ -1,0 +1,39 @@
+name: Harness Auto-merge
+description: >-
+  Merges a pull request classified as low-risk with a passing AI review.
+  Adds a harness:auto-merged label on success, or comments on the PR and
+  fails the action on conflict or CI failure.
+author: harness
+inputs:
+  github-token:
+    description: GitHub token with contents:write and pull-requests:write.
+    required: true
+  strategy:
+    description: Merge strategy (squash | merge | rebase).
+    required: false
+    default: squash
+  require-ci-pass:
+    description: >-
+      When 'true', verify that all commit statuses and check runs on the
+      head SHA are green before merging. Defaults to 'true'.
+    required: false
+    default: 'true'
+  auto-merged-label:
+    description: Label applied to the PR on successful auto-merge.
+    required: false
+    default: harness:auto-merged
+runs:
+  using: composite
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+    - name: Run harness auto-merge
+      shell: bash
+      run: npx --yes @butaosuinu/harness-auto-merge@latest
+      env:
+        INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
+        INPUT_STRATEGY: ${{ inputs.strategy }}
+        INPUT_REQUIRE_CI_PASS: ${{ inputs.require-ci-pass }}
+        INPUT_AUTO_MERGED_LABEL: ${{ inputs.auto-merged-label }}
