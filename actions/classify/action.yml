@@ -1,0 +1,117 @@
+name: Harness Classify
+description: Classifies PR risk level (high or low) using @butaosuinu/harness-cli static analysis.
+
+inputs:
+  config-path:
+    description: Path to .harness/config.yml (relative to the consumer repository root).
+    required: false
+    default: .harness/config.yml
+  github-token:
+    description: GitHub token used to fetch the PR diff (pulls.listFiles). Needs contents:read + pull-requests:read.
+    required: true
+  cli-source:
+    description: |
+      Where to obtain @butaosuinu/harness-cli.
+        "npm"       — npx the published package (default; requires the package to be published).
+        "workspace" — build the CLI from the harness repo's pnpm workspace checked out alongside this action.
+                      Use this mode while the CLI is still private / unpublished.
+    required: false
+    default: npm
+  node-version:
+    description: Node.js version to set up.
+    required: false
+    default: "20"
+  pnpm-version:
+    description: pnpm version to set up (used only when cli-source == workspace).
+    required: false
+    default: "10"
+
+outputs:
+  risk-level:
+    description: "Risk level: 'high' or 'low'."
+    value: ${{ steps.classify.outputs.risk-level }}
+  match-summary:
+    description: Human-readable summary of matched rules.
+    value: ${{ steps.classify.outputs.match-summary }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Set up pnpm (workspace mode)
+      if: inputs.cli-source == 'workspace'
+      uses: pnpm/action-setup@v4
+      with:
+        version: ${{ inputs.pnpm-version }}
+
+    - name: Build harness-cli from workspace
+      if: inputs.cli-source == 'workspace'
+      shell: bash
+      working-directory: ${{ github.action_path }}/../..
+      run: |
+        set -euo pipefail
+        pnpm install --frozen-lockfile
+        pnpm --filter @butaosuinu/harness-cli... build
+
+    - name: Run harness classify
+      id: classify
+      shell: bash
+      env:
+        HARNESS_CLI_SOURCE: ${{ inputs.cli-source }}
+        HARNESS_CONFIG_PATH: ${{ inputs.config-path }}
+        HARNESS_GITHUB_TOKEN: ${{ inputs.github-token }}
+        HARNESS_ACTION_REPO_ROOT: ${{ github.action_path }}/../..
+      run: |
+        set -euo pipefail
+
+        if [ "$HARNESS_CLI_SOURCE" = "workspace" ]; then
+          result_json="$(
+            pnpm --dir "$HARNESS_ACTION_REPO_ROOT" \
+              --filter @butaosuinu/harness-cli exec -- \
+              harness classify \
+                --config "$HARNESS_CONFIG_PATH" \
+                --github-token "$HARNESS_GITHUB_TOKEN" \
+                --output json \
+                --cwd "$GITHUB_WORKSPACE"
+          )"
+        elif [ "$HARNESS_CLI_SOURCE" = "npm" ]; then
+          cd "$GITHUB_WORKSPACE"
+          result_json="$(
+            npx -y @butaosuinu/harness-cli@latest classify \
+              --config "$HARNESS_CONFIG_PATH" \
+              --github-token "$HARNESS_GITHUB_TOKEN" \
+              --output json
+          )"
+        else
+          echo "::error::invalid cli-source: '$HARNESS_CLI_SOURCE' (expected 'npm' or 'workspace')"
+          exit 1
+        fi
+
+        printf '%s\n' "$result_json" > "$RUNNER_TEMP/harness-classify.json"
+
+        risk_level="$(printf '%s' "$result_json" | jq -r '.riskLevel')"
+        match_summary="$(printf '%s' "$result_json" | jq -r '.summary')"
+
+        if [ -z "$risk_level" ] || [ "$risk_level" = "null" ]; then
+          echo "::error::harness classify did not return a riskLevel. Raw output:"
+          printf '%s\n' "$result_json"
+          exit 1
+        fi
+
+        echo "risk-level=$risk_level" >> "$GITHUB_OUTPUT"
+        {
+          echo "match-summary<<HARNESS_SUMMARY_EOF"
+          printf '%s\n' "$match_summary"
+          echo "HARNESS_SUMMARY_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+        {
+          echo "### Harness Classify"
+          echo ""
+          echo "- **Risk level**: \`$risk_level\`"
+          echo "- **Summary**: $match_summary"
+        } >> "$GITHUB_STEP_SUMMARY"
