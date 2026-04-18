@@ -1,0 +1,13 @@
+diff --git a/src/components/Button.tsx b/src/components/Button.tsx
+index 1111..2222 100644
+--- a/src/components/Button.tsx
++++ b/src/components/Button.tsx
+@@ -1,5 +1,9 @@
+ export function Button({ children }: { children: React.ReactNode }) {
+-  return <button>{children}</button>
++  return (
++    <button type="button">
++      {children}
++    </button>
++  )
+ }

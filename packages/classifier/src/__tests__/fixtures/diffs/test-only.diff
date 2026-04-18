@@ -1,0 +1,13 @@
+diff --git a/src/utils/format.test.ts b/src/utils/format.test.ts
+index 1111111..2222222 100644
+--- a/src/utils/format.test.ts
++++ b/src/utils/format.test.ts
+@@ -1,5 +1,8 @@
+ import { describe, it, expect } from 'vitest'
+ import { formatDate } from './format'
+
+ describe('formatDate', () => {
++  it('handles null', () => {
++    expect(formatDate(null)).toBe('')
++  })
+ })

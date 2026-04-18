@@ -1,0 +1,14 @@
+diff --git a/prisma/schema.prisma b/prisma/schema.prisma
+index abcdef1..1234567 100644
+--- a/prisma/schema.prisma
++++ b/prisma/schema.prisma
+@@ -1,5 +1,10 @@
+ datasource db {
+   provider = "postgresql"
+   url      = env("DATABASE_URL")
+ }
++
++model User {
++  id    String @id @default(cuid())
++  email String @unique
++}
