@@ -1,0 +1,68 @@
+harness:
+  version: "1"
+  stack:
+    databases:
+      - type: postgresql
+        orm: drizzle
+        migration_paths:
+          - "drizzle/**"
+          - "src/db/schema*"
+          - "src/db/migrations/**"
+    auth:
+      - provider: supabase
+        config_paths:
+          - "src/auth/**"
+          - "src/lib/supabase*"
+          - "middleware.ts"
+  risk_rules:
+    high:
+      file_patterns:
+        - ".env*"
+        - "**/secrets/**"
+        - "**/*.pem"
+        - "**/*.key"
+        - "drizzle/**"
+        - "src/db/schema*"
+        - "src/db/migrations/**"
+        - "src/auth/**"
+        - "src/lib/supabase*"
+        - "middleware.ts"
+      ast_rules:
+        - id: raw_sql_ddl
+          description: "Raw SQL DDL statements in template literals"
+          query: |
+            (call_expression
+              function: (identifier) @tag
+              (#match? @tag "^(sql|db|query|execute)$")
+              arguments: (template_string) @content
+              (#match? @content "(DROP|ALTER|CREATE|TRUNCATE)\\s+TABLE"))
+      dependency_rules:
+        added_packages:
+          - "drizzle-orm"
+          - "drizzle-kit"
+          - "@supabase/*"
+          - "postgres"
+          - "pg"
+      diff_size:
+        max_files: 20
+        max_lines: 500
+    low:
+      file_patterns:
+        - "**/*.test.ts"
+        - "**/*.spec.ts"
+        - "**/*.test.js"
+        - "**/*.spec.js"
+        - "**/*.md"
+        - "**/*.mdx"
+  auto_merge:
+    enabled: false
+    require_ci_pass: true
+    ai_score_threshold: 75
+    strategy: squash
+  ai_review:
+    focus_areas:
+      - "security vulnerabilities"
+      - "logic errors"
+      - "performance regressions"
+      - "breaking API changes"
+    max_diff_tokens: 8000

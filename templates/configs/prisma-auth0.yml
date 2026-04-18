@@ -1,0 +1,74 @@
+harness:
+  version: "1"
+  stack:
+    databases:
+      - type: postgresql
+        orm: prisma
+        migration_paths:
+          - "prisma/migrations/**"
+          - "prisma/schema.prisma"
+    auth:
+      - provider: auth0
+        config_paths:
+          - "src/auth/**"
+          - "middleware/auth*"
+          - "pages/api/auth/**"
+  risk_rules:
+    high:
+      file_patterns:
+        - ".env*"
+        - "**/secrets/**"
+        - "**/*.pem"
+        - "**/*.key"
+        - "prisma/migrations/**"
+        - "prisma/schema.prisma"
+        - "src/auth/**"
+        - "middleware/auth*"
+        - "pages/api/auth/**"
+      ast_rules:
+        - id: raw_sql_ddl
+          description: "Raw SQL DDL statements in template literals"
+          query: |
+            (call_expression
+              function: (identifier) @tag
+              (#match? @tag "^(sql|db|query|prisma)$")
+              arguments: (template_string) @content
+              (#match? @content "(DROP|ALTER|CREATE|TRUNCATE)\\s+TABLE"))
+        - id: prisma_migrate_reset
+          description: "prisma migrate reset / drop invocation"
+          query: |
+            (call_expression
+              function: (member_expression
+                property: (property_identifier) @method
+                (#match? @method "^(reset|drop)$")))
+      dependency_rules:
+        added_packages:
+          - "prisma"
+          - "@prisma/client"
+          - "auth0"
+          - "@auth0/*"
+          - "jsonwebtoken"
+          - "passport*"
+      diff_size:
+        max_files: 20
+        max_lines: 500
+    low:
+      file_patterns:
+        - "**/*.test.ts"
+        - "**/*.spec.ts"
+        - "**/*.test.js"
+        - "**/*.spec.js"
+        - "**/*.md"
+        - "**/*.mdx"
+  auto_merge:
+    enabled: false
+    require_ci_pass: true
+    ai_score_threshold: 75
+    strategy: squash
+  ai_review:
+    focus_areas:
+      - "security vulnerabilities"
+      - "logic errors"
+      - "performance regressions"
+      - "breaking API changes"
+    max_diff_tokens: 8000
