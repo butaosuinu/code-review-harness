@@ -1,0 +1,20 @@
+{
+  "name": "code-review-harness",
+  "version": "0.1.0",
+  "private": true,
+  "description": "汎用ハーネス — PR リスクを静的解析 + AI で自動分類し、低リスクは auto-merge、高リスクは人間レビューへ誘導する",
+  "license": "MIT",
+  "packageManager": "pnpm@10.28.2",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test",
+    "test:types": "pnpm -r test:types"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}
