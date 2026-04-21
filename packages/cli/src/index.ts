@@ -1,6 +1,7 @@
 import { Command } from 'commander'
 import { registerInitCommand } from './commands/init.js'
 import { registerClassifyCommand } from './commands/classify.js'
+import { registerReviewCommand } from './commands/review.js'
 import { registerRulesCommand } from './commands/rules.js'
 
 const program = new Command()
@@ -12,6 +13,7 @@ program
 
 registerInitCommand(program)
 registerClassifyCommand(program)
+registerReviewCommand(program)
 registerRulesCommand(program)
 
 program.parseAsync(process.argv).catch((err) => {

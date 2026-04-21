@@ -1,7 +1,8 @@
 import { readFileSync as nodeReadFileSync } from 'node:fs'
-import type { RiskLevel } from '@butaosuinu/harness-shared'
+import type { DiffFile, RiskLevel } from '@butaosuinu/harness-shared'
 
 export const CLASSIFY_COMMENT_MARKER = '<!-- harness[classify] -->'
+export const AI_REVIEW_COMMENT_MARKER = '<!-- harness[ai-review] -->'
 
 export interface PullRequestContext {
   owner: string
@@ -114,9 +115,10 @@ interface IssueComment {
   body?: string
 }
 
-export async function upsertMatchedReasonComment(
+async function upsertMarkedComment(
   octokit: OctokitLike,
   ctx: PullRequestContext,
+  marker: string,
   body: string,
 ): Promise<void> {
   const comments = (await octokit.paginate(octokit.rest.issues.listComments, {
@@ -126,9 +128,7 @@ export async function upsertMatchedReasonComment(
     per_page: 100,
   })) as IssueComment[]
 
-  const existing = comments.find((c) =>
-    (c.body ?? '').includes(CLASSIFY_COMMENT_MARKER),
-  )
+  const existing = comments.find((c) => (c.body ?? '').includes(marker))
 
   if (existing) {
     await octokit.rest.issues.updateComment({
@@ -145,6 +145,55 @@ export async function upsertMatchedReasonComment(
       body,
     })
   }
+}
+
+export function upsertMatchedReasonComment(
+  octokit: OctokitLike,
+  ctx: PullRequestContext,
+  body: string,
+): Promise<void> {
+  return upsertMarkedComment(octokit, ctx, CLASSIFY_COMMENT_MARKER, body)
+}
+
+export function upsertAiReviewComment(
+  octokit: OctokitLike,
+  ctx: PullRequestContext,
+  body: string,
+): Promise<void> {
+  return upsertMarkedComment(octokit, ctx, AI_REVIEW_COMMENT_MARKER, body)
+}
+
+interface PullFileApiResponse {
+  filename: string
+  status: string
+  additions: number
+  deletions: number
+  patch?: string
+  previous_filename?: string
+}
+
+export async function getGitHubDiff(
+  octokit: OctokitLike,
+  ctx: PullRequestContext,
+): Promise<DiffFile[]> {
+  const files = (await octokit.paginate(octokit.rest.pulls.listFiles, {
+    owner: ctx.owner,
+    repo: ctx.repo,
+    pull_number: ctx.prNumber,
+    per_page: 100,
+  })) as PullFileApiResponse[]
+
+  return files.map((f) => {
+    const entry: DiffFile = {
+      filename: f.filename,
+      status: f.status === 'renamed' ? 'renamed' : (f.status as DiffFile['status']),
+      additions: f.additions,
+      deletions: f.deletions,
+    }
+    if (f.patch !== undefined) entry.patch = f.patch
+    if (f.previous_filename !== undefined) entry.previousFilename = f.previous_filename
+    return entry
+  })
 }
 
 export async function requestCodeownerReviewers(

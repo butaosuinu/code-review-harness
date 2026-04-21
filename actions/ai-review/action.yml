@@ -1,0 +1,132 @@
+name: Harness AI Review
+description: >-
+  Runs @butaosuinu/harness-reviewer against a low-risk PR diff and exposes
+  the resulting score and recommendation as outputs for downstream jobs
+  (auto-merge gating).
+
+inputs:
+  anthropic-api-key:
+    description: Anthropic API key. Empty / unset causes the action to fail (graceful skip is tracked separately).
+    required: true
+  github-token:
+    description: GitHub token used to fetch the PR diff and upsert the review comment. Needs contents:read + pull-requests:write.
+    required: true
+  score-threshold:
+    description: Score threshold surfaced in the step summary and PR comment. Downstream gating (e.g., auto-merge) reads `score` directly and re-applies its own threshold.
+    required: false
+    default: "75"
+  config-path:
+    description: Path to .harness/config.yml (relative to the consumer repository root).
+    required: false
+    default: .harness/config.yml
+  cli-source:
+    description: |
+      Where to obtain @butaosuinu/harness-cli.
+        "npm"       — npx the published package (default; requires the package to be published).
+        "workspace" — build the CLI from the harness repo's pnpm workspace checked out alongside this action.
+                      Use this mode while the CLI is still private / unpublished.
+    required: false
+    default: npm
+  node-version:
+    description: Node.js version to set up.
+    required: false
+    default: "20"
+  pnpm-version:
+    description: pnpm version to set up (used only when cli-source == workspace).
+    required: false
+    default: "10"
+
+outputs:
+  score:
+    description: "AI review score (0-100 integer; may be 0 on fallback)."
+    value: ${{ steps.review.outputs.score }}
+  recommendation:
+    description: "'approve' or 'request_changes'."
+    value: ${{ steps.review.outputs.recommendation }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    - name: Set up pnpm (workspace mode)
+      if: inputs.cli-source == 'workspace'
+      uses: pnpm/action-setup@v4
+      with:
+        version: ${{ inputs.pnpm-version }}
+
+    - name: Build harness-cli from workspace
+      if: inputs.cli-source == 'workspace'
+      shell: bash
+      working-directory: ${{ github.action_path }}/../..
+      run: |
+        set -euo pipefail
+        pnpm install --frozen-lockfile
+        pnpm --filter @butaosuinu/harness-cli... build
+
+    - name: Run harness review
+      id: review
+      shell: bash
+      env:
+        HARNESS_CLI_SOURCE: ${{ inputs.cli-source }}
+        HARNESS_CONFIG_PATH: ${{ inputs.config-path }}
+        HARNESS_GITHUB_TOKEN: ${{ inputs.github-token }}
+        HARNESS_SCORE_THRESHOLD: ${{ inputs.score-threshold }}
+        HARNESS_ACTION_REPO_ROOT: ${{ github.action_path }}/../..
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+      run: |
+        set -euo pipefail
+
+        if [ "$HARNESS_CLI_SOURCE" = "workspace" ]; then
+          result_json="$(
+            pnpm --dir "$HARNESS_ACTION_REPO_ROOT" \
+              --filter @butaosuinu/harness-cli exec -- \
+              harness review \
+                --config "$HARNESS_CONFIG_PATH" \
+                --github-token "$HARNESS_GITHUB_TOKEN" \
+                --score-threshold "$HARNESS_SCORE_THRESHOLD" \
+                --output json \
+                --cwd "$GITHUB_WORKSPACE"
+          )"
+        elif [ "$HARNESS_CLI_SOURCE" = "npm" ]; then
+          cd "$GITHUB_WORKSPACE"
+          result_json="$(
+            npx -y @butaosuinu/harness-cli@latest review \
+              --config "$HARNESS_CONFIG_PATH" \
+              --github-token "$HARNESS_GITHUB_TOKEN" \
+              --score-threshold "$HARNESS_SCORE_THRESHOLD" \
+              --output json
+          )"
+        else
+          echo "::error::invalid cli-source: '$HARNESS_CLI_SOURCE' (expected 'npm' or 'workspace')"
+          exit 1
+        fi
+
+        printf '%s\n' "$result_json" > "$RUNNER_TEMP/harness-review.json"
+
+        score="$(printf '%s' "$result_json" | jq -r '.score')"
+        recommendation="$(printf '%s' "$result_json" | jq -r '.recommendation')"
+
+        if [ -z "$score" ] || [ "$score" = "null" ]; then
+          echo "::error::harness review did not return a score. Raw output:"
+          printf '%s\n' "$result_json"
+          exit 1
+        fi
+        if [ -z "$recommendation" ] || [ "$recommendation" = "null" ]; then
+          echo "::error::harness review did not return a recommendation. Raw output:"
+          printf '%s\n' "$result_json"
+          exit 1
+        fi
+
+        echo "score=$score" >> "$GITHUB_OUTPUT"
+        echo "recommendation=$recommendation" >> "$GITHUB_OUTPUT"
+
+        {
+          echo "### Harness AI review"
+          echo ""
+          echo "- **Score**: \`$score\` / threshold \`$HARNESS_SCORE_THRESHOLD\`"
+          echo "- **Recommendation**: \`$recommendation\`"
+        } >> "$GITHUB_STEP_SUMMARY"

@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@butaosuinu/harness-classifier": "workspace:*",
+    "@butaosuinu/harness-reviewer": "workspace:*",
     "@butaosuinu/harness-shared": "workspace:*",
     "@octokit/rest": "^21.0.2",
     "commander": "^12.1.0",
