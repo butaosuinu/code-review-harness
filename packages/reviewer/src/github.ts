@@ -58,6 +58,7 @@ export interface PostReviewInput {
 
 export interface MappedComments {
   comments: InlineComment[]
+  resolved: ReviewConcern[]
   unresolved: ReviewConcern[]
 }
 
@@ -72,7 +73,8 @@ export function computePosition(
   let newLine = 0
   let seenFirstHunk = false
 
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]!
     if (line.startsWith('@@')) {
       const match = line.match(/@@\s+-\d+(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/)
       if (match) newLine = Number.parseInt(match[1]!, 10) - 1
@@ -81,11 +83,15 @@ export function computePosition(
       continue
     }
     if (!seenFirstHunk) continue
+    // trailing `split('\n')` artifact when patch ends with '\n'
+    if (line === '' && i === lines.length - 1) continue
 
     position += 1
-    if (line.startsWith('-')) continue
-    newLine += 1
-    if (newLine === targetLine) return position
+    // `-` deletions and `\ No newline...` markers occupy a position slot but no new-side row
+    if (line.startsWith('+') || line.startsWith(' ')) {
+      newLine += 1
+      if (newLine === targetLine) return position
+    }
   }
 
   return null
@@ -99,6 +105,7 @@ export function toReviewComments(
   for (const file of diff) byFilename.set(file.filename, file)
 
   const comments: InlineComment[] = []
+  const resolved: ReviewConcern[] = []
   const unresolved: ReviewConcern[] = []
 
   for (const concern of concerns) {
@@ -112,6 +119,7 @@ export function toReviewComments(
       unresolved.push(concern)
       continue
     }
+    resolved.push(concern)
     comments.push({
       path: concern.file,
       position,
@@ -119,7 +127,7 @@ export function toReviewComments(
     })
   }
 
-  return { comments, unresolved }
+  return { comments, resolved, unresolved }
 }
 
 function renderConcernBody(concern: ReviewConcern): string {
@@ -128,12 +136,23 @@ function renderConcernBody(concern: ReviewConcern): string {
 
 function renderReviewBody(
   result: ReviewResult,
+  resolved: readonly ReviewConcern[],
   unresolved: readonly ReviewConcern[],
 ): string {
   const lines: string[] = [AI_REVIEW_COMMENT_MARKER, '', '## AI Review', '']
   lines.push(`**Score:** ${result.score}`)
   lines.push(`**Recommendation:** ${result.recommendation}`)
   lines.push('', result.summary)
+
+  // body carries every concern so update-path callers still surface new findings
+  if (resolved.length > 0) {
+    lines.push('', '### Concerns', '')
+    for (const concern of resolved) {
+      lines.push(
+        `- \`${concern.file}:${concern.line}\` **[${concern.severity}]** ${concern.message}`,
+      )
+    }
+  }
 
   if (unresolved.length > 0) {
     lines.push('', '### Concerns without resolvable diff position', '')
@@ -179,8 +198,8 @@ async function findExistingReview(
 
 export async function postReview(input: PostReviewInput): Promise<void> {
   const { octokit, ctx, diff, result } = input
-  const { comments, unresolved } = toReviewComments(diff, result.concerns)
-  const body = renderReviewBody(result, unresolved)
+  const { comments, resolved, unresolved } = toReviewComments(diff, result.concerns)
+  const body = renderReviewBody(result, resolved, unresolved)
 
   const existing = await findExistingReview(octokit, ctx)
 

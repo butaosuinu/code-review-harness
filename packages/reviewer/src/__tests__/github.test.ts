@@ -56,6 +56,28 @@ describe('computePosition', () => {
     expect(computePosition(patch, 11)).toBe(6)
     expect(computePosition(patch, 12)).toBe(7)
   })
+
+  it('does not advance newLine for `\\ No newline at end of file` markers', () => {
+    const patch = [
+      '@@ -1,2 +1,2 @@',
+      ' a',
+      '-b',
+      '+c',
+      '\\ No newline at end of file',
+    ].join('\n')
+
+    expect(computePosition(patch, 1)).toBe(1)
+    expect(computePosition(patch, 2)).toBe(3)
+    // target line 3 does not exist on the new side; marker must not pose as line 3
+    expect(computePosition(patch, 3)).toBeNull()
+  })
+
+  it('does not treat a trailing newline split artifact as a diff row', () => {
+    const patch = '@@ -1,2 +1,3 @@\n a\n+b\n c\n'
+    expect(computePosition(patch, 3)).toBe(3)
+    // a phantom 4th line would return non-null for targetLine=4
+    expect(computePosition(patch, 4)).toBeNull()
+  })
 })
 
 describe('toReviewComments', () => {
@@ -250,6 +272,33 @@ describe('postReview', () => {
     expect(payload.review_id).toBe(99)
     expect(payload.body).toContain(AI_REVIEW_COMMENT_MARKER)
     expect(payload.body).toContain('Mostly fine, a few nits.')
+  })
+
+  it('includes resolvable concerns in the update body so they are not silently dropped', async () => {
+    // updateReview only accepts a body — if we did not list resolved concerns
+    // there, a re-run that surfaced new in-diff findings would lose them.
+    const existing = {
+      id: 77,
+      body: `${AI_REVIEW_COMMENT_MARKER}\nprior content`,
+    }
+    const { octokit, updateReview } = makeOctokit([existing])
+
+    await postReview({ octokit, ctx, diff, result })
+
+    const payload = updateReview.mock.calls[0]![0]
+    // resolvable concern (src/a.ts:2) must appear in the body
+    expect(payload.body).toContain('`src/a.ts:2`')
+    expect(payload.body).toContain('**[low]** rename this')
+    // unresolved concern still listed under its own section
+    expect(payload.body).toContain('`src/b.ts:1`')
+  })
+
+  it('body lists resolvable concerns on the create path too', async () => {
+    const { octokit, createReview } = makeOctokit([])
+    await postReview({ octokit, ctx, diff, result })
+    const payload = createReview.mock.calls[0]![0]
+    expect(payload.body).toContain('### Concerns')
+    expect(payload.body).toContain('`src/a.ts:2`')
   })
 
   it('omits comments field entirely when no concern is resolvable', async () => {
