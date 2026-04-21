@@ -16,6 +16,7 @@ import {
   applyLabels,
   CLASSIFY_COMMENT_MARKER,
   defaultOctokitFactory,
+  getGitHubDiff,
   type OctokitFactory,
   type OctokitLike,
   type PullRequestContext,
@@ -46,37 +47,6 @@ function getLocalDiff(baseSha: string, headSha: string, cwd: string): DiffFile[]
     maxBuffer: 64 * 1024 * 1024,
   })
   return parseUnifiedDiff(diff)
-}
-
-async function getGitHubDiff(
-  octokit: OctokitLike,
-  ctx: PullRequestContext,
-): Promise<DiffFile[]> {
-  const files = (await octokit.paginate(octokit.rest.pulls.listFiles, {
-    owner: ctx.owner,
-    repo: ctx.repo,
-    pull_number: ctx.prNumber,
-    per_page: 100,
-  })) as Array<{
-    filename: string
-    status: string
-    additions: number
-    deletions: number
-    patch?: string
-    previous_filename?: string
-  }>
-
-  return files.map((f) => {
-    const entry: DiffFile = {
-      filename: f.filename,
-      status: f.status === 'renamed' ? 'renamed' : (f.status as DiffFile['status']),
-      additions: f.additions,
-      deletions: f.deletions,
-    }
-    if (f.patch !== undefined) entry.patch = f.patch
-    if (f.previous_filename !== undefined) entry.previousFilename = f.previous_filename
-    return entry
-  })
 }
 
 function formatZodError(e: ZodError): string {
