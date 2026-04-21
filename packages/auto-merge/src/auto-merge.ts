@@ -18,6 +18,8 @@ export interface OctokitLike {
         owner: string
         repo: string
         ref: string
+        per_page?: number
+        page?: number
       }): Promise<{ data: CombinedStatus }>
     }
     checks: {
@@ -25,6 +27,8 @@ export interface OctokitLike {
         owner: string
         repo: string
         ref: string
+        per_page?: number
+        page?: number
       }): Promise<{ data: CheckRunsResponse }>
     }
     issues: {
@@ -54,10 +58,12 @@ interface PullRequestData {
 
 interface CombinedStatus {
   state: 'success' | 'pending' | 'failure' | string
+  total_count?: number
   statuses: Array<{ context: string; state: string }>
 }
 
 interface CheckRunsResponse {
+  total_count: number
   check_runs: Array<{
     name: string
     status: string
@@ -80,6 +86,8 @@ export type AutoMergeResult =
   | { status: 'blocked'; reason: string }
 
 const COMMENT_MARKER = '<!-- harness[auto-merge] -->'
+const PER_PAGE = 100
+const PAGE_CAP = 20
 
 export async function autoMerge(input: AutoMergeInput): Promise<AutoMergeResult> {
   const { octokit, owner, repo, pullNumber, strategy, requireCiPass, autoMergedLabel } = input
@@ -95,6 +103,15 @@ export async function autoMerge(input: AutoMergeInput): Promise<AutoMergeResult>
   }
   if (pr.draft === true) {
     return blocked(octokit, owner, repo, pullNumber, 'PR is in draft state.')
+  }
+  if (pr.mergeable === null || pr.mergeable_state === 'unknown') {
+    return blocked(
+      octokit,
+      owner,
+      repo,
+      pullNumber,
+      `PR mergeability is still being computed by GitHub (mergeable=${pr.mergeable}, mergeable_state=${pr.mergeable_state}). Retry shortly.`,
+    )
   }
   if (pr.mergeable === false || pr.mergeable_state === 'dirty') {
     return blocked(
@@ -146,9 +163,9 @@ async function checkCiStatus(
   repo: string,
   sha: string,
 ): Promise<string | null> {
-  const [{ data: combined }, { data: checks }] = await Promise.all([
-    octokit.rest.repos.getCombinedStatusForRef({ owner, repo, ref: sha }),
-    octokit.rest.checks.listForRef({ owner, repo, ref: sha }),
+  const [combined, checkRuns] = await Promise.all([
+    fetchCombinedStatus(octokit, owner, repo, sha),
+    fetchAllCheckRuns(octokit, owner, repo, sha),
   ])
 
   if (combined.state === 'failure') {
@@ -161,11 +178,11 @@ async function checkCiStatus(
     return 'Combined CI status is still pending.'
   }
 
-  const unfinished = checks.check_runs.filter((c) => c.status !== 'completed')
+  const unfinished = checkRuns.filter((c) => c.status !== 'completed')
   if (unfinished.length > 0) {
     return `Check runs still in progress: ${unfinished.map((c) => c.name).join(', ')}.`
   }
-  const failed = checks.check_runs.filter(
+  const failed = checkRuns.filter(
     (c) =>
       c.conclusion !== null &&
       c.conclusion !== 'success' &&
@@ -176,7 +193,56 @@ async function checkCiStatus(
     return `Check runs failed: ${failed.map((c) => `${c.name} (${c.conclusion})`).join(', ')}.`
   }
 
+  if (combined.statuses.length === 0 && checkRuns.length === 0) {
+    return `No CI statuses or check runs observed on head SHA ${sha}. require-ci-pass=true requires at least one signal.`
+  }
+
   return null
+}
+
+async function fetchCombinedStatus(
+  octokit: OctokitLike,
+  owner: string,
+  repo: string,
+  sha: string,
+): Promise<CombinedStatus> {
+  let state: string | undefined
+  const statuses: Array<{ context: string; state: string }> = []
+  for (let page = 1; page <= PAGE_CAP; page++) {
+    const { data } = await octokit.rest.repos.getCombinedStatusForRef({
+      owner,
+      repo,
+      ref: sha,
+      per_page: PER_PAGE,
+      page,
+    })
+    state = data.state
+    statuses.push(...data.statuses)
+    if (data.statuses.length < PER_PAGE) break
+  }
+  return { state: state ?? 'pending', statuses }
+}
+
+async function fetchAllCheckRuns(
+  octokit: OctokitLike,
+  owner: string,
+  repo: string,
+  sha: string,
+): Promise<CheckRunsResponse['check_runs']> {
+  const all: CheckRunsResponse['check_runs'] = []
+  for (let page = 1; page <= PAGE_CAP; page++) {
+    const { data } = await octokit.rest.checks.listForRef({
+      owner,
+      repo,
+      ref: sha,
+      per_page: PER_PAGE,
+      page,
+    })
+    all.push(...data.check_runs)
+    if (data.check_runs.length < PER_PAGE) break
+    if (typeof data.total_count === 'number' && all.length >= data.total_count) break
+  }
+  return all
 }
 
 async function blocked(

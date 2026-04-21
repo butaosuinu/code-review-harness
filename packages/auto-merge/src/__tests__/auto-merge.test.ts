@@ -9,14 +9,21 @@ interface PullOverrides {
   sha?: string
 }
 
-function buildOctokit(opts: {
+type StatusEntry = { context: string; state: string }
+type CheckEntry = { name: string; status: string; conclusion: string | null }
+
+interface BuildOpts {
   pull?: PullOverrides
   combinedState?: 'success' | 'pending' | 'failure'
-  combinedStatuses?: Array<{ context: string; state: string }>
-  checkRuns?: Array<{ name: string; status: string; conclusion: string | null }>
+  combinedStatuses?: StatusEntry[]
+  combinedStatusPages?: StatusEntry[][]
+  checkRuns?: CheckEntry[]
+  checkRunPages?: CheckEntry[][]
   mergeResponse?: { sha: string; merged: boolean }
   mergeError?: { status?: number; message?: string }
-}) {
+}
+
+function buildOctokit(opts: BuildOpts) {
   const pull = {
     head: { sha: opts.pull?.sha ?? 'deadbeef' },
     state: opts.pull?.state ?? 'open',
@@ -25,15 +32,25 @@ function buildOctokit(opts: {
     draft: opts.pull?.draft ?? false,
   }
 
-  const getCombinedStatusForRef = vi.fn(async () => ({
-    data: {
-      state: opts.combinedState ?? 'success',
-      statuses: opts.combinedStatuses ?? [],
-    },
-  }))
-  const listForRef = vi.fn(async () => ({
-    data: { check_runs: opts.checkRuns ?? [] },
-  }))
+  const combinedPages: StatusEntry[][] =
+    opts.combinedStatusPages ?? [opts.combinedStatuses ?? []]
+  const overallState = opts.combinedState ?? 'success'
+
+  const getCombinedStatusForRef = vi.fn(async (params: { page?: number }) => {
+    const page = params.page ?? 1
+    const statuses = combinedPages[page - 1] ?? []
+    return { data: { state: overallState, statuses } }
+  })
+
+  const checkPages: CheckEntry[][] = opts.checkRunPages ?? [opts.checkRuns ?? []]
+  const totalCheckRuns = checkPages.reduce((n, p) => n + p.length, 0)
+
+  const listForRef = vi.fn(async (params: { page?: number }) => {
+    const page = params.page ?? 1
+    const check_runs = checkPages[page - 1] ?? []
+    return { data: { total_count: totalCheckRuns, check_runs } }
+  })
+
   const merge = vi.fn(async () => {
     if (opts.mergeError) {
       throw Object.assign(new Error(opts.mergeError.message ?? 'merge failed'), {
@@ -55,7 +72,17 @@ function buildOctokit(opts: {
     },
   }
 
-  return { octokit, spies: { get, merge, addLabels, createComment, getCombinedStatusForRef, listForRef } }
+  return {
+    octokit,
+    spies: {
+      get,
+      merge,
+      addLabels,
+      createComment,
+      getCombinedStatusForRef,
+      listForRef,
+    },
+  }
 }
 
 const baseInput = {
@@ -71,6 +98,7 @@ describe('autoMerge', () => {
   it('merges the PR and applies the auto-merged label when CI is green', async () => {
     const { octokit, spies } = buildOctokit({
       combinedState: 'success',
+      combinedStatuses: [{ context: 'lint', state: 'success' }],
       checkRuns: [{ name: 'ci', status: 'completed', conclusion: 'success' }],
       mergeResponse: { sha: 'final-sha', merged: true },
     })
@@ -118,6 +146,7 @@ describe('autoMerge', () => {
   it('blocks when a check run is still in progress', async () => {
     const { octokit, spies } = buildOctokit({
       combinedState: 'success',
+      combinedStatuses: [{ context: 'lint', state: 'success' }],
       checkRuns: [
         { name: 'slow-check', status: 'in_progress', conclusion: null },
       ],
@@ -132,6 +161,7 @@ describe('autoMerge', () => {
 
   it('blocks and comments when the merge API rejects with a conflict', async () => {
     const { octokit, spies } = buildOctokit({
+      combinedStatuses: [{ context: 'lint', state: 'success' }],
       mergeError: { status: 409, message: 'Merge conflict' },
     })
 
@@ -155,6 +185,20 @@ describe('autoMerge', () => {
     expect((result as { reason: string }).reason).toMatch(/dirty/)
     expect(spies.merge).not.toHaveBeenCalled()
     expect(spies.getCombinedStatusForRef).not.toHaveBeenCalled()
+  })
+
+  it('blocks without calling merge when GitHub has not finished computing mergeability (mergeable=null)', async () => {
+    const { octokit, spies } = buildOctokit({
+      pull: { mergeable: null, mergeable_state: 'unknown' },
+    })
+
+    const result = await autoMerge({ octokit, ...baseInput })
+
+    expect(result.status).toBe('blocked')
+    expect((result as { reason: string }).reason).toMatch(/computed by GitHub/)
+    expect(spies.merge).not.toHaveBeenCalled()
+    expect(spies.getCombinedStatusForRef).not.toHaveBeenCalled()
+    expect(spies.createComment).toHaveBeenCalledTimes(1)
   })
 
   it('skips CI status checks when requireCiPass is false', async () => {
@@ -201,5 +245,71 @@ describe('autoMerge', () => {
     expect(result.status).toBe('blocked')
     expect((result as { reason: string }).reason).toMatch(/draft/)
     expect(spies.merge).not.toHaveBeenCalled()
+  })
+
+  it('blocks when no CI statuses and no check runs exist on the head SHA', async () => {
+    const { octokit, spies } = buildOctokit({
+      combinedState: 'pending',
+      combinedStatuses: [],
+      checkRuns: [],
+    })
+
+    const result = await autoMerge({ octokit, ...baseInput })
+
+    expect(result.status).toBe('blocked')
+    expect((result as { reason: string }).reason).toMatch(/No CI statuses or check runs/)
+    expect(spies.merge).not.toHaveBeenCalled()
+    expect(spies.createComment).toHaveBeenCalledTimes(1)
+  })
+
+  it('detects a failing check run that sits on page 2 of the check-runs listing', async () => {
+    const firstPage: CheckEntry[] = Array.from({ length: 100 }, (_, i) => ({
+      name: `c${i}`,
+      status: 'completed',
+      conclusion: 'success',
+    }))
+    const secondPage: CheckEntry[] = [
+      { name: 'late-failure', status: 'completed', conclusion: 'failure' },
+    ]
+    const { octokit, spies } = buildOctokit({
+      combinedState: 'success',
+      combinedStatuses: [{ context: 'lint', state: 'success' }],
+      checkRunPages: [firstPage, secondPage],
+    })
+
+    const result = await autoMerge({ octokit, ...baseInput })
+
+    expect(result.status).toBe('blocked')
+    expect((result as { reason: string }).reason).toMatch(/late-failure/)
+    expect(spies.listForRef).toHaveBeenCalledTimes(2)
+    expect(spies.listForRef.mock.calls[0][0]).toMatchObject({ page: 1, per_page: 100 })
+    expect(spies.listForRef.mock.calls[1][0]).toMatchObject({ page: 2, per_page: 100 })
+    expect(spies.merge).not.toHaveBeenCalled()
+  })
+
+  it('paginates combined statuses with per_page=100', async () => {
+    const firstPage: StatusEntry[] = Array.from({ length: 100 }, (_, i) => ({
+      context: `s${i}`,
+      state: 'success',
+    }))
+    const secondPage: StatusEntry[] = [{ context: 'final', state: 'success' }]
+    const { octokit, spies } = buildOctokit({
+      combinedState: 'success',
+      combinedStatusPages: [firstPage, secondPage],
+      checkRuns: [{ name: 'ci', status: 'completed', conclusion: 'success' }],
+    })
+
+    const result = await autoMerge({ octokit, ...baseInput })
+
+    expect(result.status).toBe('merged')
+    expect(spies.getCombinedStatusForRef).toHaveBeenCalledTimes(2)
+    expect(spies.getCombinedStatusForRef.mock.calls[0][0]).toMatchObject({
+      page: 1,
+      per_page: 100,
+    })
+    expect(spies.getCombinedStatusForRef.mock.calls[1][0]).toMatchObject({
+      page: 2,
+      per_page: 100,
+    })
   })
 })
