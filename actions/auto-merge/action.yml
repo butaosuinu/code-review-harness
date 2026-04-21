@@ -4,6 +4,7 @@ description: >-
   Adds a harness:auto-merged label on success, or comments on the PR and
   fails the action on conflict or CI failure.
 author: harness
+
 inputs:
   github-token:
     description: GitHub token with contents:write and pull-requests:write.
@@ -22,18 +23,65 @@ inputs:
     description: Label applied to the PR on successful auto-merge.
     required: false
     default: harness:auto-merged
+  cli-source:
+    description: |
+      Where to obtain @butaosuinu/harness-auto-merge.
+        "npm"       — npx the published package (default; requires the package to be published).
+        "workspace" — build from the harness repo's pnpm workspace checked out alongside this action.
+                      Use this mode while the package is still private / unpublished.
+    required: false
+    default: npm
+  node-version:
+    description: Node.js version to set up.
+    required: false
+    default: '20'
+  pnpm-version:
+    description: pnpm version to set up (used only when cli-source == workspace).
+    required: false
+    default: '10'
+
 runs:
   using: composite
   steps:
-    - name: Setup Node.js
+    - name: Set up Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: '20'
+        node-version: ${{ inputs.node-version }}
+
+    - name: Set up pnpm (workspace mode)
+      if: inputs.cli-source == 'workspace'
+      uses: pnpm/action-setup@v4
+      with:
+        version: ${{ inputs.pnpm-version }}
+
+    - name: Build harness-auto-merge from workspace
+      if: inputs.cli-source == 'workspace'
+      shell: bash
+      working-directory: ${{ github.action_path }}/../..
+      run: |
+        set -euo pipefail
+        pnpm install --frozen-lockfile
+        pnpm --filter @butaosuinu/harness-auto-merge... build
+
     - name: Run harness auto-merge
       shell: bash
-      run: npx --yes @butaosuinu/harness-auto-merge@latest
       env:
+        HARNESS_CLI_SOURCE: ${{ inputs.cli-source }}
+        HARNESS_ACTION_REPO_ROOT: ${{ github.action_path }}/../..
         INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
         INPUT_STRATEGY: ${{ inputs.strategy }}
         INPUT_REQUIRE_CI_PASS: ${{ inputs.require-ci-pass }}
         INPUT_AUTO_MERGED_LABEL: ${{ inputs.auto-merged-label }}
+      run: |
+        set -euo pipefail
+
+        if [ "$HARNESS_CLI_SOURCE" = "workspace" ]; then
+          pnpm --dir "$HARNESS_ACTION_REPO_ROOT" \
+            --filter @butaosuinu/harness-auto-merge exec -- \
+            harness-auto-merge
+        elif [ "$HARNESS_CLI_SOURCE" = "npm" ]; then
+          npx --yes @butaosuinu/harness-auto-merge@latest
+        else
+          echo "::error::invalid cli-source: '$HARNESS_CLI_SOURCE' (expected 'npm' or 'workspace')"
+          exit 1
+        fi
