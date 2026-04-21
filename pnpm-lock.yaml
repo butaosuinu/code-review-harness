@@ -123,6 +123,9 @@ importers:
       '@butaosuinu/harness-shared':
         specifier: workspace:*
         version: link:../shared
+      '@octokit/rest':
+        specifier: ^21.0.2
+        version: 21.1.1
     devDependencies:
       '@types/node':
         specifier: ^22.9.3

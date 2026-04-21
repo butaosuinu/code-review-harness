@@ -15,6 +15,22 @@ export {
   buildSystemPrompt,
   serializeDiff,
 } from './prompt.js'
+export {
+  AI_REVIEW_COMMENT_MARKER,
+  computePosition,
+  defaultOctokitFactory,
+  postReview,
+  toReviewComments,
+} from './github.js'
+export type {
+  InlineComment,
+  MappedComments,
+  OctokitFactory,
+  OctokitLike,
+  PostReviewInput,
+  PullRequestContext,
+  ReviewEvent,
+} from './github.js'
 
 export const DEFAULT_MODEL = 'claude-sonnet-4-6'
 const MAX_TOKENS = 2048
