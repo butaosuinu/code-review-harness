@@ -1,0 +1,49 @@
+name: Harness Check (dogfood)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: harness-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  classify:
+    runs-on: ubuntu-latest
+    outputs:
+      risk-level: ${{ steps.classify.outputs.risk-level }}
+      match-summary: ${{ steps.classify.outputs.match-summary }}
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: classify
+        uses: ./actions/classify
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cli-source: workspace
+
+  ai-review:
+    needs: classify
+    if: needs.classify.outputs.risk-level == 'low'
+    runs-on: ubuntu-latest
+    outputs:
+      score: ${{ steps.review.outputs.score }}
+      recommendation: ${{ steps.review.outputs.recommendation }}
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: review
+        uses: ./actions/ai-review
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cli-source: workspace
