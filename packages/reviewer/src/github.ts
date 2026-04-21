@@ -125,3 +125,83 @@ export function toReviewComments(
 function renderConcernBody(concern: ReviewConcern): string {
   return `**[${concern.severity}]** ${concern.message}`
 }
+
+function renderReviewBody(
+  result: ReviewResult,
+  unresolved: readonly ReviewConcern[],
+): string {
+  const lines: string[] = [AI_REVIEW_COMMENT_MARKER, '', '## AI Review', '']
+  lines.push(`**Score:** ${result.score}`)
+  lines.push(`**Recommendation:** ${result.recommendation}`)
+  lines.push('', result.summary)
+
+  if (unresolved.length > 0) {
+    lines.push('', '### Concerns without resolvable diff position', '')
+    for (const concern of unresolved) {
+      lines.push(
+        `- \`${concern.file}:${concern.line}\` **[${concern.severity}]** ${concern.message}`,
+      )
+    }
+  }
+
+  return lines.join('\n')
+}
+
+function recommendationToEvent(
+  recommendation: ReviewResult['recommendation'],
+): ReviewEvent {
+  return recommendation === 'approve' ? 'APPROVE' : 'REQUEST_CHANGES'
+}
+
+interface ExistingReview {
+  id: number
+  body?: string | null
+}
+
+async function findExistingReview(
+  octokit: OctokitLike,
+  ctx: PullRequestContext,
+): Promise<ExistingReview | null> {
+  const reviews = (await octokit.paginate(octokit.rest.pulls.listReviews, {
+    owner: ctx.owner,
+    repo: ctx.repo,
+    pull_number: ctx.prNumber,
+    per_page: 100,
+  })) as ExistingReview[]
+
+  for (const review of reviews) {
+    if ((review.body ?? '').includes(AI_REVIEW_COMMENT_MARKER)) {
+      return review
+    }
+  }
+  return null
+}
+
+export async function postReview(input: PostReviewInput): Promise<void> {
+  const { octokit, ctx, diff, result } = input
+  const { comments, unresolved } = toReviewComments(diff, result.concerns)
+  const body = renderReviewBody(result, unresolved)
+
+  const existing = await findExistingReview(octokit, ctx)
+
+  if (existing) {
+    await octokit.rest.pulls.updateReview({
+      owner: ctx.owner,
+      repo: ctx.repo,
+      pull_number: ctx.prNumber,
+      review_id: existing.id,
+      body,
+    })
+    return
+  }
+
+  await octokit.rest.pulls.createReview({
+    owner: ctx.owner,
+    repo: ctx.repo,
+    pull_number: ctx.prNumber,
+    commit_id: ctx.headSha,
+    body,
+    event: recommendationToEvent(result.recommendation),
+    comments: comments.length > 0 ? comments : undefined,
+  })
+}
