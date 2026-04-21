@@ -1,0 +1,36 @@
+harness:
+  version: "1"
+  stack: {}
+  risk_rules:
+    high:
+      file_patterns:
+        - ".env*"
+        - "**/secrets/**"
+        - "**/*.pem"
+        - "**/*.key"
+      ast_rules: []
+      dependency_rules:
+        added_packages: []
+      diff_size:
+        max_files: 20
+        max_lines: 500
+    low:
+      file_patterns:
+        - "**/*.test.ts"
+        - "**/*.spec.ts"
+        - "**/*.test.js"
+        - "**/*.spec.js"
+        - "**/*.md"
+        - "**/*.mdx"
+  auto_merge:
+    enabled: false
+    require_ci_pass: true
+    ai_score_threshold: 75
+    strategy: squash
+  ai_review:
+    focus_areas:
+      - "security vulnerabilities"
+      - "logic errors"
+      - "performance regressions"
+      - "breaking API changes"
+    max_diff_tokens: 8000
